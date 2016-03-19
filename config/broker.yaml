@@ -1,0 +1,8 @@
+#broker端口配置
+port : :9595
+#redis地址
+redis : 192.168.139.139:6699
+#log输出到文件，可不配置
+#log_path: /Users/lihaoquan/Desktop/taskbin/logs
+#日志级别
+log_level: debug

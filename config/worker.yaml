@@ -1,0 +1,15 @@
+#redis地址
+redis : 192.168.139.139:6699
+#异步任务可执行文件目录
+bin_path : /Users/lihaoquan/Desktop/taskbin
+#日志输出目录，可不配置
+#log_path : /Users/lihaoquan/Desktop/taskbin/logs
+#日志级别
+log_level: debug
+
+#每个任务执行时间间隔，单位为秒
+period : 1
+#结果保存时间，单位为秒
+result_keep_time : 1000
+#任务执行最长时间，单位秒
+task_run_time: 30
