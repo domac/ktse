@@ -45,10 +45,11 @@ go run worker/main.go  -config=config/worker.yaml
 
 
 (1). 执行脚本异步任务API接口
-
+```go
 POST /api/task/script
+```
 
-#请求参数
+请求参数
 bin_name //字符串类型，表示异步对应的可执行文件名，必须提供
 args //字符串类型，执行参数，多个参数用空格分隔，可为空
 start_time //整型，异步任务开始执行时刻，为空表示立刻执行，可为空
@@ -57,10 +58,10 @@ max_run_time //整型，异步任务最长运行时间（单位为秒),超过将
 
 
 (2). 执行RPC异步任务API接口
-
+```go
 POST /api/task/rpc
-
-#请求参数
+```
+请求参数
 method //请求类型：GET,PUT,POST,DELETE
 url //异步任务对应的URL,需要加单引号
 args //json Marshal后的字符串,需要加单引号
@@ -70,10 +71,10 @@ max_run_time //整型，异步任务最长运行时间（单位为秒),超过将
 
 
 (3). 查看异步任务结果API接口
-
+```go
 GET /api/task/result/:uuid
-
+```
 (4). 统计查看积压任务个数
-
+```go
 http GET 127.0.0.1:9595/api/task/count/undo
-
+```
