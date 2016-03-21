@@ -4,25 +4,27 @@ import (
 	"fmt"
 	"github.com/labstack/echo"
 	"github.com/labstack/echo/engine/standard"
+	"github.com/phillihq/ktse/logger"
 	"gopkg.in/redis.v3"
 	"strconv"
 	"strings"
 	"time"
-	"github.com/phillihq/ktse/logger"
 )
 
 type Broker struct {
-	cfg         *BrokerConfig
-	port        string
-	redisAddr   string
-	redisDB     int
-	running     bool
-	web         *echo.Echo
-	redisClient *redis.Client
-	timer       *Timer
+	cfg                *BrokerConfig
+	port               string
+	redisAddr          string
+	redisDB            int
+	running            bool
+	web                *echo.Echo
+	redisClient        *redis.Client
+	redisClusterClient *redis.ClusterClient
+	timer              *Timer
+	cluster            bool
 }
 
-func NewBroker(cfg *BrokerConfig) (*Broker, error) {
+func NewBroker(cfg *BrokerConfig, cluster bool) (*Broker, error) {
 	var err error
 	broker := new(Broker)
 	broker.cfg = cfg
@@ -55,7 +57,18 @@ func NewBroker(cfg *BrokerConfig) (*Broker, error) {
 		},
 	)
 
-	_, err = broker.redisClient.Ping().Result()
+	broker.cluster = cluster
+	broker.redisClusterClient = redis.NewClusterClient(
+		&redis.ClusterOptions{
+			Addrs: []string{broker.redisAddr},
+		},
+	)
+
+	if broker.IsCluster() {
+		_, err = broker.redisClusterClient.Ping().Result()
+	} else {
+		_, err = broker.redisClient.Ping().Result()
+	}
 	if err != nil {
 		logger.GetLogger().Errorln("broker", "NewBroker", "ping redis fail", 0, "err", err.Error())
 		return nil, err
@@ -74,7 +87,13 @@ func (b *Broker) Run() {
 func (b *Broker) Close() {
 	b.running = false
 	b.redisClient.Close()
+	b.redisClusterClient.Close()
 	b.timer.Stop()
+}
+
+//是否采用集群模式
+func (b *Broker) IsCluster() bool {
+	return b.cluster
 }
 
 //处理任务结果
@@ -83,10 +102,19 @@ func (b *Broker) HandleTaskResult(uuid string) (*Reply, error) {
 		return nil, ErrInvalidArgument
 	}
 	key := fmt.Sprintf("r_%s", uuid)
-	result, err := b.redisClient.HMGet(key,
-		"is_success",
-		"result",
-	).Result()
+	var result []interface{}
+	var err error
+	if b.IsCluster() {
+		result, err = b.redisClusterClient.HMGet(key,
+			"is_success",
+			"result",
+		).Result()
+	} else {
+		result, err = b.redisClient.HMGet(key,
+			"is_success",
+			"result",
+		).Result()
+	}
 	if err != nil {
 		logger.GetLogger().Errorln("Broker", "HandleTaskResult", err.Error(), 0, "req_key", key)
 		return nil, err
@@ -133,7 +161,12 @@ func (b *Broker) HandleFailTask() error {
 	var err error
 
 	for b.running {
-		uuid, err = b.redisClient.SPop(FailResultUuidSet).Result()
+
+		if b.IsCluster() {
+			uuid, err = b.redisClusterClient.SPop(FailResultUuidSet).Result()
+		} else {
+			uuid, err = b.redisClient.SPop(FailResultUuidSet).Result()
+		}
 		if err == redis.Nil {
 			time.Sleep(time.Second)
 			continue
@@ -144,7 +177,16 @@ func (b *Broker) HandleFailTask() error {
 		}
 
 		key := fmt.Sprintf("r_%s", uuid)
-		timeInterval, err := b.redisClient.HGet(key, "time_interval").Result()
+
+		var timeInterval string
+		var err error
+
+		if b.IsCluster() {
+			timeInterval, err = b.redisClusterClient.HGet(key, "time_interval").Result()
+		} else {
+			timeInterval, err = b.redisClient.HGet(key, "time_interval").Result()
+		}
+
 		if err != nil {
 			logger.GetLogger().Errorln("Broker", "HandleFailTask", err.Error(), 0, "key", key)
 			continue
@@ -156,15 +198,29 @@ func (b *Broker) HandleFailTask() error {
 			continue
 		}
 
-		results, err := b.redisClient.HMGet(key,
-			"uuid",
-			"bin_name",
-			"args",
-			"start_time",
-			"time_interval",
-			"index",
-			"max_run_time",
-			"task_type").Result()
+		var results []interface{}
+
+		if b.IsCluster() {
+			results, err = b.redisClusterClient.HMGet(key,
+				"uuid",
+				"bin_name",
+				"args",
+				"start_time",
+				"time_interval",
+				"index",
+				"max_run_time",
+				"task_type").Result()
+		} else {
+			results, err = b.redisClient.HMGet(key,
+				"uuid",
+				"bin_name",
+				"args",
+				"start_time",
+				"time_interval",
+				"index",
+				"max_run_time",
+				"task_type").Result()
+		}
 		if err != nil {
 			logger.GetLogger().Errorln("Broker", "HandleFailTask", err.Error(), 0, "key", key)
 			continue
@@ -176,7 +232,12 @@ func (b *Broker) HandleFailTask() error {
 		}
 
 		//删除结果
-		_, err = b.redisClient.Del(key).Result()
+		if b.IsCluster() {
+			_, err = b.redisClusterClient.Del(key).Result()
+		} else {
+			_, err = b.redisClient.Del(key).Result()
+		}
+
 		if err != nil {
 			logger.GetLogger().Errorln("Broker", "HandleFailTask", "delete result failed", 0, "key", key)
 		}
@@ -191,7 +252,15 @@ func (b *Broker) HandleFailTask() error {
 
 func (b *Broker) SetFailTaskCount(reqKey string) error {
 	failTaskKey := fmt.Sprintf(FailTaskKey, time.Now().Format(TimeFormat))
-	count, err := b.redisClient.Incr(failTaskKey).Result()
+
+	var count int64
+	var err error
+
+	if b.IsCluster() {
+		count, err = b.redisClusterClient.Incr(failTaskKey).Result()
+	} else {
+		count, err = b.redisClient.Incr(failTaskKey).Result()
+	}
 	if err != nil {
 		logger.GetLogger().Errorln("Worker", "SetFailTaskCount", "Incr", 0, "err", err.Error(), "req_key", reqKey)
 		return err
@@ -200,7 +269,11 @@ func (b *Broker) SetFailTaskCount(reqKey string) error {
 	//第一次设置该key
 	if count == 1 {
 		expireTime := time.Second * time.Duration(60*60*24*30)
-		_, err = b.redisClient.Expire(failTaskKey, expireTime).Result()
+		if b.IsCluster() {
+			_, err = b.redisClusterClient.Expire(failTaskKey, expireTime).Result()
+		} else {
+			_, err = b.redisClient.Expire(failTaskKey, expireTime).Result()
+		}
 		if err != nil {
 			logger.GetLogger().Errorln("Worker", "SetFailTaskCount", "Expire", 0, "err", err.Error(), "req_key", reqKey)
 			return err
@@ -258,17 +331,34 @@ func (b *Broker) AddRequestToRedis(tr interface{}) error {
 		return ErrInvalidArgument
 	}
 	key := fmt.Sprintf("t_%s", r.Uuid)
-	setCmd := b.redisClient.HMSet(key,
-		"uuid", r.Uuid,
-		"bin_name", r.BinName,
-		"args", r.Args,
-		"start_time", strconv.FormatInt(r.StartTime, 10),
-		"time_interval", r.TimeInterval,
-		"index", strconv.Itoa(r.Index),
-		"max_run_time", strconv.FormatInt(r.MaxRunTime, 10),
-		"task_type", strconv.Itoa(r.TaskType),
-	)
-	err := setCmd.Err()
+
+	var err error
+	if b.IsCluster() {
+		setCmd := b.redisClusterClient.HMSet(key,
+			"uuid", r.Uuid,
+			"bin_name", r.BinName,
+			"args", r.Args,
+			"start_time", strconv.FormatInt(r.StartTime, 10),
+			"time_interval", r.TimeInterval,
+			"index", strconv.Itoa(r.Index),
+			"max_run_time", strconv.FormatInt(r.MaxRunTime, 10),
+			"task_type", strconv.Itoa(r.TaskType),
+		)
+		err = setCmd.Err()
+	} else {
+		setCmd := b.redisClient.HMSet(key,
+			"uuid", r.Uuid,
+			"bin_name", r.BinName,
+			"args", r.Args,
+			"start_time", strconv.FormatInt(r.StartTime, 10),
+			"time_interval", r.TimeInterval,
+			"index", strconv.Itoa(r.Index),
+			"max_run_time", strconv.FormatInt(r.MaxRunTime, 10),
+			"task_type", strconv.Itoa(r.TaskType),
+		)
+		err = setCmd.Err()
+	}
+
 	if err != nil {
 		logger.GetLogger().Errorln("Broker", "AddRequestToRedis", "HMSET error", 0,
 			"set", RequestUuidSet,
@@ -277,8 +367,14 @@ func (b *Broker) AddRequestToRedis(tr interface{}) error {
 		)
 		return err
 	}
-	saddCmd := b.redisClient.SAdd(RequestUuidSet, r.Uuid)
-	err = saddCmd.Err()
+	if b.IsCluster() {
+		saddCmd := b.redisClusterClient.SAdd(RequestUuidSet, r.Uuid)
+		err = saddCmd.Err()
+	} else {
+		saddCmd := b.redisClient.SAdd(RequestUuidSet, r.Uuid)
+		err = saddCmd.Err()
+	}
+
 	if err != nil {
 		logger.GetLogger().Errorln("Broker", "AddRequestToRedis", "SADD error", 0,
 			"set", RequestUuidSet,
@@ -292,7 +388,15 @@ func (b *Broker) AddRequestToRedis(tr interface{}) error {
 
 //获取未执行的任务数量
 func (b *Broker) GetUndoTaskCount() (int64, error) {
-	count, err := b.redisClient.SCard(RequestUuidSet).Result()
+
+	var count int64
+	var err error
+
+	if b.IsCluster() {
+		count, err = b.redisClusterClient.SCard(RequestUuidSet).Result()
+	} else {
+		count, err = b.redisClient.SCard(RequestUuidSet).Result()
+	}
 	if err == redis.Nil {
 		return 0, nil
 	}
@@ -308,7 +412,14 @@ func (b *Broker) GetFailTaskCount(date string) (int64, error) {
 		return 0, ErrInvalidArgument
 	}
 	failTaskKey := fmt.Sprintf(FailTaskKey, date)
-	str, err := b.redisClient.Get(failTaskKey).Result()
+	var str string
+	var err error
+	if b.IsCluster() {
+		str, err = b.redisClusterClient.Get(failTaskKey).Result()
+	} else {
+		str, err = b.redisClient.Get(failTaskKey).Result()
+	}
+
 	if err == redis.Nil {
 		return 0, nil
 	}
@@ -328,7 +439,13 @@ func (b *Broker) GetSuccessTaskCount(date string) (int64, error) {
 		return 0, ErrInvalidArgument
 	}
 	successTaskKey := fmt.Sprintf(SuccessTaskKey, date)
-	str, err := b.redisClient.Get(successTaskKey).Result()
+	var str string
+	var err error
+	if b.IsCluster() {
+		str, err = b.redisClusterClient.Get(successTaskKey).Result()
+	} else {
+		str, err = b.redisClient.Get(successTaskKey).Result()
+	}
 	if err == redis.Nil {
 		return 0, nil
 	}

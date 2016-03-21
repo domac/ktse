@@ -3,6 +3,7 @@ package core
 import (
 	"bytes"
 	"fmt"
+	"github.com/phillihq/ktse/logger"
 	"gopkg.in/redis.v3"
 	"io"
 	"io/ioutil"
@@ -13,18 +14,19 @@ import (
 	"strconv"
 	"strings"
 	"time"
-	"github.com/phillihq/ktse/logger"
 )
 
 type Worker struct {
-	cfg         *WorkerConfig
-	redisAddr   string
-	redisDB     int
-	running     bool
-	redisClient *redis.Client
+	cfg                *WorkerConfig
+	redisAddr          string
+	redisDB            int
+	running            bool
+	redisClient        *redis.Client
+	redisClusterClient *redis.ClusterClient
+	cluster            bool
 }
 
-func NewWorker(cfg *WorkerConfig) (*Worker, error) {
+func NewWorker(cfg *WorkerConfig, cluster bool) (*Worker, error) {
 	var err error
 	w := new(Worker)
 	w.cfg = cfg
@@ -48,7 +50,19 @@ func NewWorker(cfg *WorkerConfig) (*Worker, error) {
 			DB:       int64(w.redisDB),
 		},
 	)
-	_, err = w.redisClient.Ping().Result()
+
+	w.cluster = cluster
+	w.redisClusterClient = redis.NewClusterClient(
+		&redis.ClusterOptions{
+			Addrs: []string{w.redisAddr},
+		},
+	)
+
+	if w.IsCluster() {
+		_, err = w.redisClusterClient.Ping().Result()
+	} else {
+		_, err = w.redisClient.Ping().Result()
+	}
 	if err != nil {
 		logger.GetLogger().Errorln("worker", "NewWorker", "ping redis fail", 0, "err", err.Error())
 		return nil, err
@@ -60,7 +74,15 @@ func (w *Worker) Run() error {
 	var taskResult *TaskResult
 	w.running = true
 	for w.running {
-		uuid, err := w.redisClient.SPop(RequestUuidSet).Result()
+
+		var uuid string
+		var err error
+
+		if w.IsCluster() {
+			uuid, err = w.redisClusterClient.SPop(RequestUuidSet).Result()
+		} else {
+			uuid, err = w.redisClient.SPop(RequestUuidSet).Result()
+		}
 		if err == redis.Nil {
 			time.Sleep(time.Second)
 			continue
@@ -71,16 +93,33 @@ func (w *Worker) Run() error {
 		}
 		reqKey := fmt.Sprintf("t_%s", uuid)
 		//获取请求中所有值
-		request, err := w.redisClient.HMGet(reqKey,
-			"uuid",
-			"bin_name",
-			"args",
-			"start_time",
-			"time_interval",
-			"index",
-			"max_run_time",
-			"task_type",
-		).Result()
+
+		var request []interface{}
+
+		if w.IsCluster() {
+			request, err = w.redisClusterClient.HMGet(reqKey,
+				"uuid",
+				"bin_name",
+				"args",
+				"start_time",
+				"time_interval",
+				"index",
+				"max_run_time",
+				"task_type",
+			).Result()
+		} else {
+			request, err = w.redisClient.HMGet(reqKey,
+				"uuid",
+				"bin_name",
+				"args",
+				"start_time",
+				"time_interval",
+				"index",
+				"max_run_time",
+				"task_type",
+			).Result()
+		}
+
 		if err != nil {
 			logger.GetLogger().Errorln("Worker", "run", err.Error(), 0, "req_key", reqKey)
 			continue
@@ -92,7 +131,12 @@ func (w *Worker) Run() error {
 			continue
 		}
 
-		_, err = w.redisClient.Del(reqKey).Result()
+		if w.IsCluster() {
+			_, err = w.redisClusterClient.Del(reqKey).Result()
+		} else {
+			_, err = w.redisClient.Del(reqKey).Result()
+		}
+
 		if err != nil {
 			logger.GetLogger().Errorln("Worker", "run", "delete result failed", 0, "req_key", reqKey)
 		}
@@ -124,6 +168,12 @@ func (w *Worker) Run() error {
 func (w *Worker) Close() {
 	w.running = false
 	w.redisClient.Close()
+	w.redisClusterClient.Close()
+}
+
+//是否采用集群模式
+func (w *Worker) IsCluster() bool {
+	return w.cluster
 }
 
 func (w *Worker) DoTaskRequest(args []interface{}) (*TaskResult, error) {
@@ -331,33 +381,62 @@ func (w *Worker) newHttpRequest(method string, url string, args string) (*http.R
 //设置任务执行结果
 func (w *Worker) SetTaskResult(result *TaskResult) error {
 	key := fmt.Sprintf("r_%s", result.Uuid)
-	setCmd := w.redisClient.HMSet(key,
-		"uuid", result.Uuid,
-		"bin_name", result.BinName,
-		"args", result.Args,
-		"start_time", strconv.FormatInt(result.StartTime, 10),
-		"time_interval", result.TimeInterval,
-		"index", strconv.Itoa(result.Index),
-		"max_run_time", strconv.FormatInt(result.MaxRunTime, 10),
-		"task_type", strconv.Itoa(result.TaskType),
-		"is_success", strconv.Itoa(int(result.IsSuccess)),
-		"result", result.Result,
-	)
-	err := setCmd.Err()
+
+	var err error
+
+	if w.IsCluster() {
+		setCmd := w.redisClusterClient.HMSet(key,
+			"uuid", result.Uuid,
+			"bin_name", result.BinName,
+			"args", result.Args,
+			"start_time", strconv.FormatInt(result.StartTime, 10),
+			"time_interval", result.TimeInterval,
+			"index", strconv.Itoa(result.Index),
+			"max_run_time", strconv.FormatInt(result.MaxRunTime, 10),
+			"task_type", strconv.Itoa(result.TaskType),
+			"is_success", strconv.Itoa(int(result.IsSuccess)),
+			"result", result.Result,
+		)
+		err = setCmd.Err()
+	} else {
+		setCmd := w.redisClient.HMSet(key,
+			"uuid", result.Uuid,
+			"bin_name", result.BinName,
+			"args", result.Args,
+			"start_time", strconv.FormatInt(result.StartTime, 10),
+			"time_interval", result.TimeInterval,
+			"index", strconv.Itoa(result.Index),
+			"max_run_time", strconv.FormatInt(result.MaxRunTime, 10),
+			"task_type", strconv.Itoa(result.TaskType),
+			"is_success", strconv.Itoa(int(result.IsSuccess)),
+			"result", result.Result,
+		)
+		err = setCmd.Err()
+	}
 	if err != nil {
 		return err
 	}
 	//如果任务是执行失败
 	if result.IsSuccess == int64(0) {
-		saddCmd := w.redisClient.SAdd(FailResultUuidSet, result.Uuid)
-		err = saddCmd.Err()
+		var err error
+		if w.IsCluster() {
+			saddCmd := w.redisClusterClient.SAdd(FailResultUuidSet, result.Uuid)
+			err = saddCmd.Err()
+		} else {
+			saddCmd := w.redisClient.SAdd(FailResultUuidSet, result.Uuid)
+			err = saddCmd.Err()
+		}
 		if err != nil {
 			return err
 		}
 	}
 
 	//设置结果的过期时间
-	_, err = w.redisClient.Expire(key, time.Second*time.Duration(w.cfg.ResultKeepTime)).Result()
+	if w.IsCluster() {
+		_, err = w.redisClusterClient.Expire(key, time.Second*time.Duration(w.cfg.ResultKeepTime)).Result()
+	} else {
+		_, err = w.redisClient.Expire(key, time.Second*time.Duration(w.cfg.ResultKeepTime)).Result()
+	}
 	if err != nil {
 		return err
 	}
@@ -367,7 +446,15 @@ func (w *Worker) SetTaskResult(result *TaskResult) error {
 //设置成功的任务记录
 func (w *Worker) SetSuccessTaskCount(reqKey string) error {
 	successTaskKey := fmt.Sprintf(SuccessTaskKey, time.Now().Format(TimeFormat))
-	count, err := w.redisClient.Incr(successTaskKey).Result()
+
+	var count int64
+	var err error
+
+	if w.IsCluster() {
+		count, err = w.redisClusterClient.Incr(successTaskKey).Result()
+	} else {
+		count, err = w.redisClient.Incr(successTaskKey).Result()
+	}
 	if err != nil {
 		logger.GetLogger().Errorln("Worker", "SetSuccessTaskCount", "Incr", 0, "err", err.Error(),
 			"req_key", reqKey)
@@ -377,7 +464,12 @@ func (w *Worker) SetSuccessTaskCount(reqKey string) error {
 	if count == 1 {
 		//保存一个月
 		expireTime := time.Second * time.Duration(60*60*24*30)
-		_, err = w.redisClient.Expire(successTaskKey, expireTime).Result()
+
+		if w.IsCluster() {
+			_, err = w.redisClusterClient.Expire(successTaskKey, expireTime).Result()
+		} else {
+			_, err = w.redisClient.Expire(successTaskKey, expireTime).Result()
+		}
 		if err != nil {
 			logger.GetLogger().Errorln("Worker", "SetSuccessTaskCount", "Expire", 0, "err", err.Error(),
 				"req_key", reqKey)

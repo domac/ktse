@@ -13,6 +13,9 @@ import (
 
 var configFile *string = flag.String("config", "./config/broker.yaml", "broker config file")
 
+//是否采用集群模式
+var clusterFlag *bool = flag.Bool("c", false, "connect to redis cluster")
+
 const (
 	sysLogName = "sys.log"
 	MaxLogSize = 1024 * 1024 * 1024
@@ -34,7 +37,7 @@ func main() {
 	}
 
 	var bk *core.Broker
-	bk, err = core.NewBroker(cfg)
+	bk, err = core.NewBroker(cfg, *clusterFlag)
 	if err != nil {
 		logger.GetLogger().Errorln(err.Error())
 		bk.Close()

@@ -62,12 +62,17 @@ task_run_time: 30
 
 运行broker
 ```go
-go run broker/main.go  -config=config/broker.yaml
+
+go run broker/main.go  -config=config/broker.yaml (redis单实例模式) 
+或
+go run broker/main.go  -config=config/broker.yaml -c (redis集群模式) 
 ```
 
 运行worker
 ```go
-go run worker/main.go  -config=config/worker.yaml
+go run worker/main.go  -config=config/worker.yaml (redis单实例模式) 
+或
+go run worker/main.go  -config=config/worker.yaml -c (redis集群模式)  
 ```
 
 
@@ -100,7 +105,7 @@ POST /api/task/rpc
 
 (3). 查看异步任务结果API接口
 ```go
-GET /api/task/result/:uuid
+GET /api/task/result?uuid=f28307d6-c639-4927-aee5-442c41016ad1
 ```
 (4). 统计查看积压任务个数
 ```go

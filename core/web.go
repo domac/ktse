@@ -4,9 +4,9 @@ import (
 	"github.com/labstack/echo"
 	mw "github.com/labstack/echo/middleware"
 	"github.com/pborman/uuid"
+	"github.com/phillihq/ktse/logger"
 	"net/http"
 	"strconv"
-	"github.com/phillihq/ktse/logger"
 )
 
 //注册中间件
@@ -19,7 +19,7 @@ func (b *Broker) RegisterMiddleware() {
 func (b *Broker) RegisterURL() {
 	b.web.Post("/api/task/script", echo.HandlerFunc(b.CreateScriptTaskRequest))
 	b.web.Post("/api/task/rpc", echo.HandlerFunc(b.CreateRpcTaskRequest))
-	b.web.Get("/api/task/result/:uuid", echo.HandlerFunc(b.GetTaskResult))
+	b.web.Get("/api/task/result", echo.HandlerFunc(b.GetTaskResult))
 	b.web.Get("/api/task/count/undo", echo.HandlerFunc(b.UndoTaskCount))
 	b.web.Get("/api/task/result/failure/:date", echo.HandlerFunc(b.FailTaskCount))
 	b.web.Get("/api/task/result/success/:date", echo.HandlerFunc(b.SuccessTaskCount))
@@ -142,7 +142,8 @@ func (b *Broker) CreateRpcTaskRequest(c echo.Context) error {
 
 //获取任务结果(根据UUID)
 func (b *Broker) GetTaskResult(c echo.Context) error {
-	uuid := c.Param("uuid")
+	uuid := c.Query("uuid")
+	logger.GetLogger().Infoln("查询uuid=", uuid)
 	if len(uuid) == 0 {
 		return c.JSON(http.StatusForbidden, ErrInvalidArgument.Error())
 	}

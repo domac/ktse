@@ -13,6 +13,9 @@ import (
 
 var configFile *string = flag.String("config", "./config/worker.yaml", "worker config file")
 
+//是否采用集群模式
+var clusterFlag *bool = flag.Bool("c", false, "connect to redis cluster")
+
 const (
 	sysLogName = "sys.log"
 	MaxLogSize = 1024 * 1024 * 1024
@@ -21,6 +24,8 @@ const (
 func main() {
 	runtime.GOMAXPROCS(runtime.NumCPU())
 	flag.Parse()
+
+	fmt.Println("clusterFlag:", *clusterFlag)
 
 	if len(*configFile) == 0 {
 		fmt.Println("must use a config file")
@@ -34,7 +39,7 @@ func main() {
 	}
 
 	var w *core.Worker
-	w, err = core.NewWorker(cfg)
+	w, err = core.NewWorker(cfg, *clusterFlag)
 	if err != nil {
 		logger.GetLogger().Errorln(err.Error())
 		w.Close()
